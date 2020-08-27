@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+
+BUILD_DIR=$1
+
+if [ ! -f $BUILD_DIR/runtime.txt ]; then
+exit 1
+fi
+
+if grep -q python- "$BUILD_DIR/runtime.txt"; then
+echo detected `cat $BUILD_DIR/runtime.txt`
+exit 0
+fi
+
+exit 1

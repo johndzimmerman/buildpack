@@ -1,0 +1,278 @@
+#!/usr/bin/env bash
+
+FCOMPILE=`readlink -f "$0"`
+BPDIR=`dirname $FCOMPILE`
+BPDIR=`readlink -f "$BPDIR/.."`
+BUILD_DIR=$1
+CACHE=$2
+
+#HTTP_PROXY=proxy:8080
+#export HTTPS_PROXY=http://proxy.wdf.sap.corp:8080
+#export HTTP_PROXY=http://proxy.wdf.sap.corp:8080
+
+if [ ! -f $BUILD_DIR/runtime.txt ];then
+echo
+echo BUILPACK: Abort. Cannot find runtime.txt in application directory.
+echo BUILPACK: Please provide runtime.txt with content Python-x.x.x , example Python-3.4.4
+echo
+exit 1
+fi
+
+runtime=`cat "$BUILD_DIR"/runtime.txt`
+minus=`expr index "$runtime" -`
+
+if [ "$minus" == "0" ];then
+echo "cannot understand runtime.txt"
+echo $runtime
+exit 1
+fi
+
+lang=${runtime:0:minus}
+version=${runtime:minus}
+
+echo
+echo BUILDPACK: Detected language $lang
+echo BUILDPACK: Detected version $version
+echo
+
+versionxx=${version%.*}
+versionx=${versionxx%.*}
+
+mkdir -p work
+mkdir -p $CACHE/compiled/Python-$version
+
+runtimedir=`readlink -f "$BUILD_DIR/.buildpack"`
+mkdir -p $runtimedir
+pyexe=$runtimedir/bin/python
+PATH_PY=$runtimedir/lib/python$versionxx
+PATH_PY=$PATH_PY:$runtimedir/lib/python$versionxx/lib-dynload
+PATH_PY=$PATH_PY:$runtimedir/lib64/python$versionxx/lib-dynload
+PATH_PY=$PATH_PY:$runtimedir/lib/python$versionxx/plat-linux
+PATH_PY=$PATH_PY:$runtimedir/lib64/python$versionxx/plat-linux
+export PYTHONPATH=$PATH_PY
+export PYTHONHOME=$runtimedir
+
+
+pytgz=$CACHE/compiled/Python-${version}.tar.gz
+if [ ! -f $pytgz ];then
+pytgz=/tmp/Python-${version}.tar.gz
+fi
+
+if [ ! -f $pytgz ];then
+echo
+echo "BUILDPACK: Cached python build $pytgz not found"
+echo
+
+if [ ! -f $BPDIR/resources/python/Python-$version.tgz ];then
+echo
+echo "BUILDPACK: Downloading python source https://www.python.org/ftp/python/$version/Python-$version.tgz"
+echo
+wget -O work/Python-$version.tgz https://www.python.org/ftp/python/$version/Python-$version.tgz
+wgetexit=$?
+if [ $wgetexit -ne 0 ];then
+echo
+echo "BUILDPACK: Abort -- Python source download failed"
+echo "BUILDPACK: You can put python tar.gz in the BUILDPACK/resources/python and re-create the buildpack to avoid download from internet"
+echo
+exit $wgetexit
+fi
+else
+cp resources/python/Python-$version.tgz work
+fi
+
+gzip -d -f work/Python-$version.tgz
+tar -xf work/Python-$version.tar -C work
+if [ ! -f /usr/include/zlib.h ];then
+echo
+echo "BUILDPACK: Library zlib missing, not found /usr/include/zlib.h"
+echo
+d_zlib=work/Python-$version/Modules/zlib
+if [ -d $d_zlib ];then
+pushd $d_zlib
+echo
+echo "BUILDPACK: Build python provided zlib"
+echo
+
+./configure --prefix=$runtimedir
+
+make -j 8
+make install
+zmakeexit=$?
+if [ $zmakeexit -ne 0 ];then
+echo
+echo "BUILDPACK: Warning - failed to make install python provided zlib work/Python-$version/Modules/zlib"
+echo "BUILDPACK: Ignore last failure"
+echo
+fi
+popd
+else
+echo
+echo "BUILDPACK: Warning - Not found python provided zlib $d_zlib"
+echo
+fi
+fi
+
+pushd work/Python-$version
+
+echo
+echo "BUILDPACK: Installing python runtime to $runtimedir"
+echo
+./configure --prefix=$runtimedir --exec-prefix=$runtimedir   
+make -j 8
+make altinstall
+makeexit=$?
+popd
+
+if [ $makeexit -ne 0 ];then
+echo
+echo BUILDPACK: Abort -> Make failed in buildpack compile step
+echo
+exit $makeexit 
+fi 
+
+if [ ! -f $pyexe ];then
+echo
+echo BUILDPACK: cp $runtimedir/bin/python$versionxx $pyexe
+echo
+cp $runtimedir/bin/python$versionxx $pyexe
+fi
+
+echo
+echo BUILDPACK: PYTHONPATH=$PYTHONPATH
+echo
+
+echo "BUILDPACK: Yo!"
+echo "pwd:"
+
+pwd
+
+echo "BUILDPACK: Copying files from resources/modules/*.tar.gz"
+echo $BPDIR/resources/modules/*.tar.gz
+echo
+
+for f in $BPDIR/resources/modules/*.tar.gz
+do
+echo "  BUILDPACK: cp $f work"
+cp $f work
+fname_tar_gz=${f##*/}
+fname_tar=${fname_tar_gz%.*}
+
+echo "  BUILDPACK: Unzip"
+echo "  BUILDPACK: gzip -d -f work/$fname_tar_gz"
+gzip -d -f work/$fname_tar_gz
+echo "  BUILDPACK: Xtract"
+echo "  BUILDPACK: tar -xf work/$fname_tar -C work"
+tar -xf work/$fname_tar -C work
+done
+
+echo "BUILDPACK: Copying files from resources/modules/*.zip"
+echo $BPDIR/resources/modules/*.zip
+echo
+
+pwd
+
+for f in $BPDIR/resources/modules/*.zip
+do
+echo "  BUILDPACK: cp $f work"
+cp $f work
+fname_zip=${f##*/}
+
+echo "  BUILDPACK: Unzip"
+pushd work
+echo "  BUILDPACK: unzip -q -u $fname_zip"
+unzip -q -u $fname_zip
+popd
+done
+
+echo "BUILDPACK: Build setuptools"
+pwd
+
+pushd work/setuptools*
+echo "BUILDPACK: $pyexe setup.py build install"
+$pyexe setup.py build install
+setupexit=$?
+if [ $setupexit -ne 0 ];then
+echo
+echo "BUILDPACK: Abort --> Failed to install python module setuptools"
+echo
+exit $setupexit
+fi   
+popd
+
+echo "BUILDPACK: Build pip"
+
+pushd work/pip*
+echo "BUILDPACK: $pyexe setup.py build install"
+$pyexe setup.py build install
+setupexit=$?
+if [ $setupexit -ne 0 ];then
+echo
+echo "BUILDPACK: WARNING --> Ignored:Failed to install python module pip"
+echo
+fi
+popd
+
+tar -cf $CACHE/compiled/Python-$version.tar -C $runtimedir .
+gzip $CACHE/compiled/Python-$version.tar
+
+echo
+echo BUILDPACK: Cached python build $CACHE/compiled/Python-$version.tar.gz
+echo
+cp $CACHE/compiled/Python-$version.tar.gz /tmp/Python-$version.tar.gz
+else
+echo
+echo "BUILDPACK: Cached python build found $pytgz"
+echo
+cp $pytgz work
+gzip -d -f work/Python-$version.tar.gz
+tar -xf work/Python-$version.tar -C $runtimedir    
+fi
+
+echo
+echo "BUILDPACK: Python executable $pyexe"
+echo `"$pyexe" --version`
+echo
+
+moduleinstall=0
+if [ -f $BUILD_DIR/requirements.txt ];then
+echo
+echo BUILDPACK: Try to execute python -m pip install -r r$BUILD_DIR/requirements.txt
+echo
+$pyexe -m pip install -r $BUILD_DIR/requirements.txt
+moduleinstall=$?
+fi
+
+if [ $moduleinstall -ne 0 ] && [ -d $BUILD_DIR/vendor ];then
+echo
+echo "BUILDPACK: Install app vendor packages using pip"
+echo $pyexe -m pip install $BUILD_DIR/vendor/*
+echo
+$pyexe -m pip install $BUILD_DIR/vendor/*
+moduleinstall=$?
+
+if [ $moduleinstall -ne 0 ];then
+echo
+echo "BUILDPACK: Install app vendor tar.gz packages without pip"
+echo
+
+for f in $BUILD_DIR/vendor/*.tar.gz
+do
+if [ -f $f ];then
+echo
+echo "BUILDPACK: Installing vendor package $f"
+echo
+cp $f work
+fname_tar_gz=${f##*/}
+fname_tar=${fname_tar_gz%.*}
+fname=${fname_tar%.*}
+
+gzip -d -f work/$fname_tar_gz
+
+tar -xf work/$fname_tar -C work
+pushd work/$fname
+$pyexe setup.py build install
+popd
+fi
+done
+fi
+fi

@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+
+set -e
+
+BUILD_DIR=$1
+
+FRELEASE=`readlink -f "$0"`
+BPDIR=`dirname $FRELEASE`
+BPDIR=`readlink -f "$BPDIR/.."`
+
+mkdir -p $BUILD_DIR/.profile.d
+cp $BPDIR/resources/env.sh $BUILD_DIR/.profile.d
+
+echo "---"
+##echo "config_vars:"
+##echo "  PYTHONHOME: $HOME/.buildpack"
+echo "default_process_types:"
+echo "  web: .buildpack/bin/python server.py"
